@@ -1,0 +1,222 @@
+// === INICIO DEL SKETCH COMBINADO ARDUINO PARA D1 MINI ===
+float temperatura = 0.0;
+float humedad = 0.0;
+float presion = 0.0;
+#include <ESP8266WiFi.h>
+#include <DHT.h>
+#include <Adafruit_BMP280.h>
+#include <Wire.h>
+#include <ThingSpeak.h>
+unsigned long lastSendTime = 0;
+const unsigned long interval = 15000;  // cada 15 segundos
+
+
+// --- CONFIGURACIÓN WIFI ---
+const char* ssid = "";           // <-- CAMBIA ESTO
+const char* password = "";     // <-- CAMBIA ESTO
+
+unsigned long channelID = 2945844; // ej. 2367095
+const char* writeAPIKey = "UKWVNX26VHU3R5CH";
+
+// --- IP DINAMICA ---
+IPAddress ip(192,168,1,50);
+IPAddress gateway(192,168,1,1);
+IPAddress subnet(255,255,255,0);
+
+// --- SENSOR DHT22 ---
+#define DHTPIN D6         // GPIO12 en D1 Mini
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+// --- SENSOR BMP280 ---
+Adafruit_BMP280 bmp; // Dirección I2C por defecto 0x76
+
+// --- SERVIDOR WEB EN PUERTO 80 ---
+WiFiClient client;
+WiFiServer server(80);
+
+void setup() {
+  Serial.begin(115200);
+  delay(10);
+
+  // Iniciar sensores
+  dht.begin();
+  if (!bmp.begin(0x76)) {
+    Serial.println("No se detectó el BMP280. Verifica conexión.");
+  }
+
+  // Configurar WiFi
+  WiFi.mode(WIFI_STA);
+  //WiFi.config(ip, gateway, subnet);
+  WiFi.begin(ssid, password);
+
+  Serial.print("Conectando a WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConectado a WiFi");
+  ThingSpeak.begin(client);
+  Serial.print("Dirección IP: ");
+  Serial.println(WiFi.localIP());
+
+  // Iniciar servidor
+  server.begin();
+  Serial.println("Servidor web iniciado");
+}
+
+void loop() {
+  if (millis() - lastSendTime > interval) {
+  temperatura = dht.readTemperature();
+  humedad = dht.readHumidity();
+  presion = bmp.readPressure() / 100.0;
+
+
+  ThingSpeak.setField(1, temperatura);
+  ThingSpeak.setField(2, humedad);
+  ThingSpeak.setField(3, presion);
+
+  int status = ThingSpeak.writeFields(channelID, writeAPIKey);
+
+  if (status == 200) {
+    Serial.println("✅ Datos enviados a ThingSpeak.");
+  } else {
+    Serial.println("❌ Error al enviar datos: " + String(status));
+  }
+
+  lastSendTime = millis();
+}
+
+// === MANEJO DE CLIENTES WEB ===
+ // === SERVIDOR WEB ===
+  WiFiClient client = server.available();
+  if (!client) return;
+
+  while (!client.available()) delay(1);
+  String request = client.readStringUntil('\r');
+  client.flush();
+
+  if (request.indexOf("GET /data") >= 0) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: application/json");
+    client.println("Access-Control-Allow-Origin: *");
+    client.println();
+    client.print("{\"temperatura\":");
+    client.print(temperatura);
+    client.print(",\"humedad\":");
+    client.print(humedad);
+    client.print(",\"presion\":");
+    client.print(presion);
+    client.println("}");
+    return;
+  }
+
+  // === RESPUESTA HTML (si no es /data) ===
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/html");
+  client.println();
+    client.println("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
+    client.println("<title>Monitor IoT</title>");
+    client.println("<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>");
+    client.println("<style>");
+    client.println("body { margin: 0; font-family: 'Segoe UI', sans-serif; background: linear-gradient(to right, #e0f7fa, #e1f5fe); color: #333; }");
+    client.println("header { background: linear-gradient(to right, #007BFF, #00c6ff); color: white; padding: 20px; text-align: center; }");
+    client.println(".nav { display: flex; justify-content: center; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }");
+    client.println(".nav button { flex: 1; padding: 15px; border: none; background: none; font-size: 16px; cursor: pointer; transition: background 0.3s; }");
+    client.println(".nav button:hover, .nav button.active { background: #e3f2fd; font-weight: bold; }");
+    client.println(".contenedor { max-width: 900px; margin: 30px auto; padding: 0 20px; }");
+    client.println(".seccion { display: none; }");
+    client.println(".visible { display: block; }");
+    client.println(".tarjeta { background: linear-gradient(145deg, #ffffff, #f1f1f1); border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); padding: 25px; text-align: center; margin-bottom: 15px; }");
+    client.println(".tarjeta span { font-size: 2em; display: block; margin-top: 10px; color: #007BFF; font-weight: bold; }");
+    client.println(".grafico { background: white; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); padding: 20px; margin-bottom: 25px; }");
+    client.println("canvas { max-height: 250px; }");
+    client.println("</style></head><body>");
+
+    // HEADER
+    client.println("<header><h1>🌡️ Panel de Monitoreo IoT</h1></header>");
+
+    // NAVEGACIÓN
+    client.println("<div class='nav'>");
+    client.println("<button class='tab active' onclick=\"mostrar('general', this)\">📊 General</button>");
+    client.println("<button class='tab' onclick=\"mostrar('temp', this)\">🌞 Temperatura</button>");
+    client.println("<button class='tab' onclick=\"mostrar('hum', this)\">💧 Humedad</button>");
+    client.println("<button class='tab' onclick=\"mostrar('pres', this)\">🌬️ Presión</button>");
+    client.println("</div>");
+
+    // CONTENEDOR PRINCIPAL
+    client.println("<div class='contenedor'>");
+
+    // SECCIÓN GENERAL
+    client.println("<div id='general' class='seccion visible'>");
+    client.println("<div class='tarjeta'>🌞 Temperatura<span id='temp1'>--</span>°C</div>");
+    client.println("<div class='tarjeta'>💧 Humedad<span id='hum1'>--</span>%</div>");
+    client.println("<div class='tarjeta'>🌬️ Presión<span id='pres1'>--</span>hPa</div>");
+    client.println("<div class='grafico'><canvas id='chartTemp'></canvas></div>");
+    client.println("<div class='grafico'><canvas id='chartHum'></canvas></div>");
+    client.println("<div class='grafico'><canvas id='chartPres'></canvas></div>");
+    client.println("</div>");
+
+    // SECCIÓN TEMPERATURA
+    client.println("<div id='temp' class='seccion'>");
+    client.println("<div class='tarjeta'>🌞 Temperatura<span id='temp2'>--</span>°C</div>");
+    client.println("<div class='grafico'><canvas id='chartTemp2'></canvas></div>");
+    client.println("</div>");
+
+    // SECCIÓN HUMEDAD
+    client.println("<div id='hum' class='seccion'>");
+    client.println("<div class='tarjeta'>💧 Humedad<span id='hum2'>--</span>%</div>");
+    client.println("<div class='grafico'><canvas id='chartHum2'></canvas></div>");
+    client.println("</div>");
+
+    // SECCIÓN PRESIÓN
+    client.println("<div id='pres' class='seccion'>");
+    client.println("<div class='tarjeta'>🌬️ Presión<span id='pres2'>--</span>hPa</div>");
+    client.println("<div class='grafico'><canvas id='chartPres2'></canvas></div>");
+    client.println("</div>");
+
+    // SCRIPT
+    client.println("<script>");
+    client.println("function mostrar(id, el) {");
+    client.println("  document.querySelectorAll('.seccion').forEach(s => s.classList.remove('visible'));");
+    client.println("  document.getElementById(id).classList.add('visible');");
+    client.println("  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));");
+    client.println("  el.classList.add('active');");
+    client.println("}");
+
+    client.println("const chartTemp = new Chart(document.getElementById('chartTemp'), { type: 'line', data: { labels: [], datasets: [{ label: 'Temp', data: [], borderColor: 'red', tension: 0.3 }] }, options: { responsive: true } });");
+    client.println("const chartHum = new Chart(document.getElementById('chartHum'), { type: 'line', data: { labels: [], datasets: [{ label: 'Hum', data: [], borderColor: 'blue', tension: 0.3 }] }, options: { responsive: true } });");
+    client.println("const chartPres = new Chart(document.getElementById('chartPres'), { type: 'line', data: { labels: [], datasets: [{ label: 'Pres', data: [], borderColor: 'green', tension: 0.3 }] }, options: { responsive: true } });");
+
+    client.println("const chartTemp2 = new Chart(document.getElementById('chartTemp2'), { type: 'line', data: { labels: [], datasets: [{ label: 'Temp', data: [], borderColor: 'red', tension: 0.3 }] }, options: { responsive: true } });");
+    client.println("const chartHum2 = new Chart(document.getElementById('chartHum2'), { type: 'line', data: { labels: [], datasets: [{ label: 'Hum', data: [], borderColor: 'blue', tension: 0.3 }] }, options: { responsive: true } });");
+    client.println("const chartPres2 = new Chart(document.getElementById('chartPres2'), { type: 'line', data: { labels: [], datasets: [{ label: 'Pres', data: [], borderColor: 'green', tension: 0.3 }] }, options: { responsive: true } });");
+
+    client.println("function fetchData() {");
+    client.println("fetch('/data?' + new Date().getTime()).then(res => res.json()).then(data => {");
+    client.println("let now = new Date().toLocaleTimeString();");
+
+    client.println("if (chartTemp.data.labels.length > 20) { chartTemp.data.labels.shift(); chartTemp.data.datasets[0].data.shift(); }");
+    client.println("chartTemp.data.labels.push(now); chartTemp.data.datasets[0].data.push(data.temperatura); chartTemp.update();");
+    client.println("chartTemp2.data.labels.push(now); chartTemp2.data.datasets[0].data.push(data.temperatura); chartTemp2.update();");
+
+    client.println("if (chartHum.data.labels.length > 20) { chartHum.data.labels.shift(); chartHum.data.datasets[0].data.shift(); }");
+    client.println("chartHum.data.labels.push(now); chartHum.data.datasets[0].data.push(data.humedad); chartHum.update();");
+    client.println("chartHum2.data.labels.push(now); chartHum2.data.datasets[0].data.push(data.humedad); chartHum2.update();");
+
+    client.println("if (chartPres.data.labels.length > 20) { chartPres.data.labels.shift(); chartPres.data.datasets[0].data.shift(); }");
+    client.println("chartPres.data.labels.push(now); chartPres.data.datasets[0].data.push(data.presion); chartPres.update();");
+    client.println("chartPres2.data.labels.push(now); chartPres2.data.datasets[0].data.push(data.presion); chartPres2.update();");
+
+    client.println("document.getElementById('temp1').textContent = data.temperatura.toFixed(1);");
+    client.println("document.getElementById('temp2').textContent = data.temperatura.toFixed(1);");
+    client.println("document.getElementById('hum1').textContent = data.humedad.toFixed(1);");
+    client.println("document.getElementById('hum2').textContent = data.humedad.toFixed(1);");
+    client.println("document.getElementById('pres1').textContent = data.presion.toFixed(1);");
+    client.println("document.getElementById('pres2').textContent = data.presion.toFixed(1);");
+    client.println("}); }");
+
+    client.println("setInterval(fetchData, 5000); fetchData();");
+    client.println("</script>");
+    client.println("</div></body></html>");
+  }
